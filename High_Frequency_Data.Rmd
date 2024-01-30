@@ -1,0 +1,401 @@
+---
+title: "High Frequency Data"
+author: "Prasannavathan DK"
+output:
+  beamer_presentation:
+    theme: AnnArbor
+    colortheme: crane
+  ioslides_presentation: default
+  pdf_document: 
+    extra_dependencies: ["bbm", 'amsmath', 'mathrsfs', 'amssymb', 'dsfont', 'graphicx']
+classoption: potrait, a4paper
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r warning=FALSE, echo=FALSE, include = FALSE}
+###Library imports
+#install.packages("xts")
+#install.packages("highfrequency", dependencies = TRUE)
+library("xts")
+library("highfrequency")
+library("dplyr")
+library("tidyr")
+library("ggplot2")
+library("data.table")
+library("tuple")
+```
+
+## Introduction
+
+\begin{alertblock}{Content of focus}
+  Research on the micro-structure of markets with estimation (No further analysis or prediction)
+\end{alertblock}
+
+  - What is being estimating? 
+      
+      Parameters of a mathematical model representing a tangible quantity (subject to interpretation)
+  - How are they estimated? 
+  
+    Methods
+  - Issues with estimators? 
+  
+    Noise and Asynchronicity
+      
+## Inspecting the data
+\tiny
+```{r}
+data = read.csv("AAPL.csv", header=TRUE)
+head(data, 15)
+```
+
+
+## Visualizing the price process
+
+```{r echo=TRUE, highlight = TRUE}
+datetime = strptime(data[,1], format="%d.%m.%Y %H:%M:%OS")
+price = xts::as.xts(data[,2:3], order.by=datetime)
+colnames(price) = c("ask","bid")
+midprice = (price[,1]+price[,2])/2
+names(midprice) = "midpoint"
+midprice1m = highfrequency::aggregateTS(
+  midprice, FUN = "mean", alignBy ="minutes", alignPeriod=1)
+```
+
+## Plot
+
+```{r out.width="80%", out.height="80%", fig.align="center"}
+plot(midprice1m, main = "Price Process", xlab="TimeStamp", ylab="USD")
+legend("bottomright", legend = c("Apple Stock (AAPL)"))
+```
+
+## Visualizing the log returns
+```{r out.width="80%", out.height="80%", fig.align="center"}
+logReturns = highfrequency::makeReturns(midprice1m)
+plot(logReturns, main = "", xlab="TimeStamp", ylab="Log Returns")
+legend("topleft", legend = c("Apple Stock (AAPL)"), cex = 1)
+```
+
+## Describing the data
+\tiny
+```{r out.width="100%"}
+logReturns %>% 
+  exp(.) %>% 
+    data.frame(.) %>% 
+      dplyr::summarise(across(where(is.numeric), .fns = 
+                     list(min = min,
+                          median = median,
+                          mean = mean,
+                          stdev = sd,
+                          q25 = ~quantile(., 0.25),
+                          q75 = ~quantile(., 0.75),
+                          max = max)))
+```
+
+## Mathematical Model
+
+\begin{block}{What Mathematical construct should be used to describe the data?}
+  Here, the Standard Black–Scholes model for the Stock Price Process is used, with a constant drift $\mu$ and volatility $\sigma$ for the Intra-day data.
+\end{block}
+
+$X_t = \log{S_t}$ is the log price process with the following Stochastic Differential Equation:
+
+$dX_t = X_0 + \mu.dt + \sigma.dW_t$
+
+\begin{block}{How are the parameters estimated?}
+  If we take differences, we get the log returns. Log returns are the increments of a brownian motion which by definition are stationary  and are independent and identically distributed (iid) with law $\mathcal{N}\left(\mu \Delta_{n}, \sigma^{2} \Delta_{n}\right)$. 
+The parameters of interest are $\mu$ and $\sigma$ and we can obtain the maximum likelihood estimates of these parameters.
+\end{block}
+
+## Continued...
+
+$$
+\Delta X_{t_{n, i+1}}=X_{t_{n, i+1}}-X_{t_{n, i}}, i=0, \ldots, n-1
+$$
+
+$$
+\begin{gathered}
+\hat{\mu}_{n}=\frac{1}{n \Delta_{n}} \sum_{i=0}^{n-1} \Delta X_{t_{n, i+1}}=\left(X_{T}-X_{0}\right) / T, \\
+\hat{\sigma}_{n}^{2}=\frac{1}{n \Delta_{n}} \sum_{i=0}^{n-1}\left(\Delta X_{t_{n, i+1}}-\Delta \bar{X}_{t_{n}}\right)^{2}
+\end{gathered}
+$$
+with start time: t = 0 and end time: t= T. Assuming $n$ equi-spaced observations $t_{n,i} = i.\Delta_{n};  \Delta_{n} = T/n$
+
+Estimated parameters for the returns process:
+```{r out.extra = 'style="border:5px solid orange;"'}
+#Estimating mu
+midprice1m = data.frame(midprice1m)
+X = midprice1m[, 1]
+n = length(X)
+T = as.numeric(difftime(as.POSIXlt(datetime[length(datetime)]), as.POSIXlt(datetime[1]), unit = "mins"))
+mu_sample = (X[n] - X[1])/T#average drift per minute 
+```
+```{r}
+#Estimating sigma
+logReturns = data.frame(logReturns)
+delta_X = midprice1m[, 1]
+n = length(X)
+delta_n = 1 # 1 minute
+sigma_sample = sum((delta_X - mean(delta_X))**2)/(n*delta_n)
+```
+```{r}
+se_returnsProcess = c(mu_sample, sigma_sample)
+se_returnsProcess
+```
+
+## Are these consistent Estimators?
+
+\begin{block}{Yes, Proof:}
+ Objective: To show that $\hat{\sigma}_{n}^{2}$ is a consistent estimator of $\sigma^{2}$ for fixed $T$, as $n \rightarrow \infty$. 
+\end{block}
+
+- Define $U_{n, i}=\Delta X_{t_{n, i}} /\left(\sigma \Delta_{n}^{1 / 2}\right)$. 
+$\implies U_{n, i}$ are iid, distributed as ${\mathrm{N}\left((\mu / \sigma) \Delta_{n}^{1 / 2}, 1\right)}$.
+- $\implies \sum_{i=0}^{n-1}\left(U_{n, i}-\right.$ $\left.\bar{U}_{n, .}\right)^{2}$ are distributed as ${\chi^{2}}$ with $n-1$ degrees of freedom.
+- Then, say $Z_{1}, \ldots, Z_{n-1}$ are chi-square random variables, each with mean 1 and variance 2, we can write
+
+$$
+\hat{\sigma}_{n}^{2}=\frac{\sigma^{2}}{n} \sum_{i=0}^{n-1}\left(U_{n, i}-\bar{U}_{n, .}\right)^{2} \stackrel{d}{=} \sigma^{2} \frac{n-1}{n} \bar{Z}_{n-1}
+$$
+
+## Continued...
+Mean and variance of $\bar{Z}_{n-1}$ are 1 and $2 /(n-1)$, respectively. 
+
+So,
+
+$$
+E\left(\hat{\sigma_{n}^{2}}\right)=\sigma^{2} \frac{n-1}{n} \text { and } \operatorname{Var}\left(\hat{\sigma_{n}^{2}}\right)=\sigma^{4} \frac{(n-1)}{n^{2}}
+$$
+
+By strong law of large numbers, $\bar{Z}_{n-1}$ converges to the mean 1 of $Z_{1}$ almost surely. Note that the factor $(n-1) / n$ converges to 1. Hence $\hat{\sigma}_{n}^{2}$ converges to $\sigma^{2}$ almost surely.
+
+For the Asymptotic Normality of the estimator: $\hat{\sigma}_{n}^{2}$:
+
+From the Central Limit Theorem, $\sqrt{n-1}\left(\bar{Z}_{n-1}-1\right)$ converges in distribution to $\mathcal{N}(0,2)$.
+
+## Continued...
+$$
+\begin{aligned}
+\sqrt{n}\left(\hat{\sigma}_{n}^{2}-\sigma^{2}\right) & \stackrel{d}{=} \sqrt{n}\left(\sigma^{2} \frac{n-1}{n} \bar{Z}_{n-1}-\sigma^{2}\right) \\
+& =\sqrt{n}\left(\sigma^{2} \frac{n-1}{n} \bar{Z}_{n-1}-\sigma^{2} \bar{Z}_{n-1}+\sigma^{2} \bar{Z}_{n-1}-\sigma^{2}\right) \\
+& =\sqrt{n}\left(\sigma^{2} \frac{n-1}{n} \bar{Z}_{n-1}-\sigma^{2} \bar{Z}_{n-1}\right) \\
+& + \sqrt{\frac{n}{n-1}} \sqrt{n-1} \sigma^{2}\left(\bar{Z}_{n-1}-1\right) \\
+& =-\frac{1}{\sqrt{n}} \sigma^{2} \bar{Z}_{n-1}+\sqrt{\frac{n}{n-1}} \sqrt{n-1} \sigma^{2}\left(\bar{Z}_{n-1}-1\right)
+\end{aligned}
+$$
+
+
+
+The first term converges to zero as $\bar{Z}_{n-1}$ converges to a constant 1 almost surely and $\frac{1}{\sqrt{n}}$ converges to zero. The fraction in the second term converges to 1 . From the Central Limit Theorem, $\sqrt{n-1}\left(\bar{Z}_{n-1}-1\right)$ converges in distribution to $\mathcal{N}(0,2)$. 
+
+## Continued...
+Using Slutsky's theorem,
+$$
+\sqrt{n}\left(\hat{\sigma}_{n}^{2}-\sigma^{2}\right) \stackrel{d}{\Rightarrow} \mathcal{N}\left(0,2 \sigma^{4}\right)
+$$
+
+$$\tiny\square$$
+Additionally,
+$$
+\begin{aligned}
+\hat{\sigma}_{n}^{2} =\frac{1}{T} \sum_{i=0}^{n-1}\left(\Delta X_{t_{n, i+1}}^{2}\right)-\frac{\left(X_{T}-X_{0}\right)^{2}}{n T} .
+\end{aligned}
+$$
+The second term goes to zero as $\mathrm{n}$ increases. The quantity $\sum_{i=0}^{n-1}\left(\Delta X_{t_{n, i+1}}^{2}\right)$ is known as the realized volatility and is used to estimate $\sigma^{2} T$.
+
+Calculated realized parameters:
+```{r}
+realized_drift = mu_sample
+asymptotic_volatility = ((X[length(X)] - X[1])**2)/(length(X)*T)
+estimated_volatility = sum(delta_X**2)/T - asymptotic_volatility
+realized_volatility = estimated_volatility*T
+realized_sigma = sqrt(realized_volatility/T)
+realized_priceProcess = c(realized_drift, realized_volatility, realized_sigma)
+realized_priceProcess
+```
+
+## Microstructure Noise
+
+$Y_{t_{i}} = X_{t_{i}} + noise$ with $X_{t}$ assumed a semi-martingale, which is true for the geometric brownian motion in the Back-Scholes market.
+Sources:
+
+- Discrete tick size
+- Lag in arrival and execution of trades
+- bid-ask spread
+- Asymmetric information
+
+
+## An empirical illustration
+
+For the Grid test, choose grids of:
+$$
+\mathcal{H}_{k}=\{T k / n, T(K+k) / n, T(2 K+k) / n, \ldots\}, \forall k \in\{0, \ldots, K-1\}
+$$
+
+and compute the realized volatility $[Y, Y]_{k}$ for each grid. The length of each interval is $T K / n$, and there are $K$ such grids. 
+The average realized volatility (ARV) is given by:
+
+$$
+\operatorname{ARV}(Y, K)=\frac{1}{K} \sum_{k=0}^{K-1}[Y, Y]_{k}
+$$
+```{r}
+computeRealdVol = function(K){
+  realdVol_ = c()
+  for(k in seq(0, K-1, by=1)){
+    grid = seq(k, n, by = K)
+    realdVol_ = c(realdVol_, sum(delta_X[grid]**2))
+  }
+  return(mean(realdVol_))
+}
+```
+
+## Plot
+```{r out.width="80%", out.height="80%", fig.align="center"}
+K = c(391, 23, 17, 1)
+realdVol = c();
+for(k in K){
+  realdVol = c(realdVol, computeRealdVol(k))
+}
+plot(realdVol, type = "b", main = "Grid Estimation", xlab="K (descending)", ylab="Realized Volatility")
+mtext("K = {391, 23, 17, 1}")
+```
+
+## rBPCov: Realized bipower covariance Plots
+
+```{r out.width="80%", out.height="80%", fig.align="center"}
+rbp = highfrequency::rBPCov(midprice,makeReturns=TRUE)
+price1m = highfrequency::aggregateTS(midprice, on="minutes", k=1)
+rbp1m = highfrequency::rBPCov(price1m,makeReturns=TRUE)
+price17m = highfrequency::aggregateTS(midprice, on="minutes", k=17)
+rbp17m = highfrequency::rBPCov(price17m,makeReturns=TRUE)
+price23m = highfrequency::aggregateTS(midprice, on="minutes", k=23)
+rbp23m = highfrequency::rBPCov(price23m,makeReturns=TRUE)
+price391m = highfrequency::aggregateTS(midprice, on="minutes", k=391)
+rbp391m = highfrequency::rBPCov(price23m,makeReturns=TRUE)
+x = c(rbp,rbp1m,rbp17m,rbp23m, rbp391m)
+x = x*10^4
+plot(rev(x), type="b", main = "Grid Estimation", xlab="K (descending)", ylab="Realized bipower covariance")
+mtext("K = {391, 23, 17, 1}")
+```
+
+## Asynchronicity
+
+So far it has been uni-variate modelling and how are these concepts extended to multi-variate models with correlation dynamics. For instance, in pricing of basket options, analytical solutions are often intractable and hence Monte Carlo-based approaches to joint modeling is often employed.
+
+Here, we address not the modelling but one of the challenges that occurs with multi-asset modelling, that financial transactions do not take place synchronously with Epps effect being one consequence of it.
+
+\tiny
+```{r}
+async1 = read.csv("FB.csv", header=TRUE)
+head(async1)
+datetime_async1 = strptime(async1[,1], format="%d.%m.%Y %H:%M:%OS")
+price_async1 = xts::as.xts(async1[,2:3], order.by=datetime_async1)
+colnames(price_async1) = c("ask","bid")
+midprice_async1 = (price_async1[,1]+price_async1[,2])/2
+ticks_1 = price_async1[,1]/price_async1[, 1]
+names(midprice_async1) = "midpoint1"
+midprice1_1m = highfrequency::aggregateTS(midprice_async1, FUN = "previoustick", alignBy = "minutes", alignPeriod=1, makeReturns=TRUE)
+midprice1_5m = highfrequency::aggregateTS(midprice_async1, FUN = "previoustick", alignBy = "minutes", alignPeriod=5, makeReturns=TRUE)
+```
+
+\tiny
+```{r}
+async2 = read.csv("GOOG.csv", header=TRUE)
+head(async2)
+datetime_async2 = strptime(async2[,1], format="%d.%m.%Y %H:%M:%OS")
+price_async2 = xts::as.xts(async2[,2:3], order.by=datetime_async2)
+colnames(price_async2) = c("ask","bid")
+midprice_async2 = (price_async2[,1]+price_async2[,2])/2
+ticks_2 = price_async2[,1]*2/price_async2[,1]
+names(midprice_async2) = "midpoint2"
+midprice2_1m = highfrequency::aggregateTS(midprice_async2, FUN = "previoustick", alignBy = "minutes", alignPeriod=1, makeReturns=TRUE)
+midprice2_5m = highfrequency::aggregateTS(midprice_async2, FUN = "previoustick", alignBy = "minutes", alignPeriod=5, makeReturns=TRUE)
+```
+```{r}
+minMaxScalar <- function(x){
+  return((x- min(x)) /(max(x)-min(x)))
+}
+```
+
+## Plot
+```{r out.width="80%", out.height="80%", fig.align="center"}
+plot(c(ticks_1[0:10], ticks_2[0:10]), type="p", ylim = c(0,3), main = "", xlab="TimeStamp", ylab="Securities", legend = c("1 = Facebook (FB), 2 = Google (GOOG)"))
+```
+
+## Mathematical-Model
+
+Suppose we have multiple stocks, say $p$ stocks, whose price processes are denoted by $S_t^{(j)} j=1, \ldots, p$ and $X_t^{(j)}=\log S_t^{(j)}$. Alternatively, in vector notation, $\mathbf{X}_{\mathbf{t}}$ is a $p$ dimensional diffusion process
+$$
+\mathrm{d} \mathbf{X}_t=\mu_t \mathrm{~d} t+\sigma_t \mathrm{~d} \mathbf{W}_{\mathbf{t}}
+$$
+where $\mu_t$ is $p$ dimensional drift process and $\sigma_t$ is a $p \mathrm{x} p$ matrix, called instantaneous covolatility process. $\mathbf{W}_{\mathbf{t}}$ is a $p$ dimensional standard Brownian motion. Our parameter of interest is
+$$
+\Sigma_p=\int_0^1 \sigma_t \sigma_t^T \mathrm{~d} t
+$$
+This quantity is called the Integrated Covariance matrix (ICV). 
+
+## Biased Estimator: 
+Merton (1980) proposed an estimator of this quantity known as Realized Volatility Matrix:
+$$
+\sum_{p}^{\mathrm{RCV}}=\sum_{l=1}^{n} \Delta X_{l} \Delta X_{l}^{T}
+$$
+
+where $\Delta X_{l}=\left(\begin{array}{c}\Delta X_{l}^{1} \\ \Delta X_{l}^{2} \\ \cdot \\ \cdot \\ \Delta X_{l}^{p}\end{array}\right)=\left(\begin{array}{c}X_{\tau_{l}}^{1}-X_{\tau_{l-1}}^{1} \\ \cdot \\ \cdot \\ \cdot \\ X_{\tau_{l}}^{p}-X_{\tau_{l-1}}^{p}\end{array}\right)$.
+
+\tiny
+\begin{block}{Problem}
+    This estimator is based on the assumption that all the observations are observed synchronously.
+\end{block}
+
+\tiny
+\begin{block}{Possible Solution}
+    Convert the irregularly spaced observations to equal spaced intervals using "previous tick interpolation" and "linear interpolation" methods.
+\end{block}
+
+## Plot
+
+\tiny
+```{r }
+df = data.frame(midprice1_1m, midprice2_1m)
+df["midpoint1"] = lapply(df["midpoint1"], minMaxScalar)
+df["midpoint2"] = lapply(df["midpoint2"], minMaxScalar)
+df_sub =  df[0:10,]
+```
+\tiny
+```{r out.width="80%", out.height="80%", fig.align="center"}
+ggplot(df_sub, aes(x = row.names(df_sub))) +
+  geom_point(aes(y=midpoint1), colour="red") +
+  geom_point(aes(y=midpoint2), colour="green") + 
+  ggtitle("") +
+  xlab("TimeStamp") + ylab("Price") + theme(axis.text.x = element_text(angle = 90))
+```
+
+However this forced synchronization leads to bias under the Epps effect.
+
+## Yet another Estimator (Consistent):
+
+\begin{block}{Hayashi and Yoshida (HY) Estimator}
+$$
+\Sigma_{p}^{H Y}=\sum_{k, l} \Delta X_{k} \Delta X_{l}^{T} \circ I(k, l)
+$$
+
+where $\Delta X_{l}$ is as defined before.
+\end{block}
+
+
+Here ' $o$ ' is Hadamard product and $I(k, l)$ is a $p \times p$ matrix whose $(i, j)$ th element is the indicator function involving $k$ th interarrival of $i$ th stock and $l$ th interarrival of $j$ th stock: $I\left(I_{k}^{i} \cap I_{l}^{j} \neq \phi\right)$, where $I_{k}^{i}=\left(\tau_{k-1}^{i}, \tau_{k}^{i}\right)$. This estimator is consistent and asymptotically normal.
+
+HY estimator:
+```{r}
+HY = highfrequency::rHYCov(rData = xts::as.xts(midprice_async1), makeReturns=TRUE, cor = TRUE, alignBy = "minutes", alignPeriod = 1)
+HY
+```
+
+## References
+
+- [1] Sen, Rituparna, and Sourish Das. Computational Finance with R, Springer, 2023.
+- [2] Alexander Lindner, Lecture Notes- Stochastic Analysis, Summer semester 2023
+- [3] Documentation- Package ‘highfrequency’ and 'xts'
+- [4] Wikipedia
